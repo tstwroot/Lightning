@@ -36,7 +36,6 @@
 #define LIGHTNING_READ_BUFFER_SIZE        8192
 #define LIGHTNING_EPOLL_MAX_EVENTS        64
 #define LIGHTNING_EPOLL_TIMEOUT_MS        -1
-#define LIGHTNING_THREAD_POOL_QUEUE_SIZE  1024
 
 #define LIGHTNING_ERROR(error_message) \
   fprintf(stderr,                      \
