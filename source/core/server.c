@@ -94,14 +94,16 @@ struct lightning_server *lightning_create(unsigned short port)
   if(server == NULL)
   {
     LIGHTNING_ERROR("can not allocate struct lightning_server");
-    goto __return_null;
+    return NULL;
   }
 
   server->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   if(server->socket_fd < 0)
   {
     LIGHTNING_ERROR("can not create a socket");
-    goto __free_server;
+    close(server->socket_fd);
+    free(server);
+    return NULL;
   }
 
   server->port = port;
@@ -114,19 +116,25 @@ struct lightning_server *lightning_create(unsigned short port)
   if(setsockopt(server->socket_fd, SOL_SOCKET, SO_REUSEPORT, &(int){1}, sizeof(int)) < 0)
   {
     LIGHTNING_ERROR("can not set the socketopt to SO_REUSEPORT (linux kernel > 3.9 ?)");
-    goto __clean_up;
+    close(server->socket_fd);
+    free(server);
+    return NULL;
   }
 
   if(bind(server->socket_fd, (struct sockaddr_in *)&server->address, sizeof(struct sockaddr_in)) < 0)
   {
     LIGHTNING_ERROR("can not make bind");
-    goto __clean_up;
+    close(server->socket_fd);
+    free(server);
+    return NULL;
   }
 
   if(listen(server->socket_fd, SOMAXCONN) < 0)
   {
     LIGHTNING_ERROR("can not listen");
-    goto __clean_up;
+    close(server->socket_fd);
+    free(server);
+    return NULL;
   }
 
   int flags = fcntl(server->socket_fd, F_GETFL, 0);
@@ -193,13 +201,6 @@ struct lightning_server *lightning_create(unsigned short port)
   server->running = true;
 
   return server;
-
-__clean_up:
-  close(server->socket_fd);
-__free_server:
-  free(server);
-__return_null:
-  return NULL;
 }
 
 void lightning_ride(struct lightning_server *server)
