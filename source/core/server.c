@@ -32,6 +32,9 @@
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
+#include <lightning/connection.h>
+#include <lightning/http.h>
+
 #define LIGHTNING_MAX_CONNECTIONS 1024
 #define LIGHTNING_READ_BUFFER_SIZE 8192
 #define LIGHTNING_EPOLL_MAX_EVENTS 64
@@ -40,29 +43,6 @@
 #define LIGHTNING_ERROR(error_message) \
   fprintf(stderr,                      \
           "[Lightning Error]: In <%s> line %d (%s)\n", __FUNCTION__, __LINE__, error_message)
-
-enum lightning_connection_state
-{
-  CONN_STATE_CLOSED = 0,
-  CONN_STATE_READING_REQUEST,
-  CONN_STATE_PROCESSING,
-  CONN_STATE_WRITING_RESPONSE,
-  CONN_STATE_CLOSING
-};
-
-struct lightning_connection
-{
-  struct sockaddr_in client_addr;
-  char read_buffer[LIGHTNING_READ_BUFFER_SIZE];
-  char *write_buffer;
-  size_t read_pos;
-  size_t read_total;
-  size_t write_total;
-  size_t write_pos;
-  time_t last_activity;
-  enum lightning_connection_state state;
-  int fd;
-};
 
 struct lightning_server
 {
@@ -82,7 +62,6 @@ static void accept_new_connection(struct lightning_server *server);
 static void close_connection(struct lightning_server *server, int fd);
 static void handle_client_read(struct lightning_server *server, int fd);
 static void handle_client_write(struct lightning_server *server, int fd);
-static int is_request_complete(struct lightning_connection *conn);
 static int set_socket_nonblocking(int fd);
 
 struct lightning_server *lightning_create_server(unsigned short port, const int max_connections)
@@ -166,7 +145,7 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
     }
   }
 
-  server->connections = calloc(server->max_connections, sizeof(struct lightning_connection));
+  server->connections = lightning_create_connection(server->max_connections);
   if(server->connections == NULL)
   {
     LIGHTNING_ERROR("allocating connections array");
@@ -174,11 +153,6 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
     close(server->socket_fd);
     free(server);
     return NULL;
-  }
-
-  for(int i = 0; i < server->max_connections; i++)
-  {
-    lightning_connection_reset(&server->connections[i]);
   }
 
   struct epoll_event ev;
@@ -496,70 +470,4 @@ static void handle_client_write(struct lightning_server *server, int fd)
       close_connection(server, fd);
     }
   }
-}
-
-void lightning_connection_init(struct lightning_connection *conn, int fd, struct sockaddr_in *addr)
-{
-  if(conn == NULL)
-  {
-    return;
-  }
-
-  conn->fd = fd;
-  conn->state = CONN_STATE_READING_REQUEST;
-
-  memset(conn->read_buffer, 0, sizeof(conn->read_buffer));
-  conn->read_pos = 0;
-  conn->read_total = 0;
-
-  conn->write_buffer = NULL;
-  conn->write_total = 0;
-  conn->write_pos = 0;
-
-  if(addr != NULL)
-  {
-    memcpy(&conn->client_addr, addr, sizeof(struct sockaddr_in));
-  }
-
-  conn->last_activity = time(NULL);
-}
-
-void lightning_connection_reset(struct lightning_connection *conn)
-{
-  if(conn == NULL)
-  {
-    return;
-  }
-
-  if(conn->write_buffer != NULL)
-  {
-    free(conn->write_buffer);
-    conn->write_buffer = NULL;
-  }
-
-  conn->fd = -1;
-  conn->state = CONN_STATE_CLOSED;
-  conn->read_pos = 0;
-  conn->read_total = 0;
-  conn->write_total = 0;
-  conn->write_pos = 0;
-}
-
-static int is_request_complete(struct lightning_connection *conn)
-{
-  if(conn == NULL || conn->read_pos == 0)
-  {
-    return 0;
-  }
-
-  for(size_t i = 0; i < conn->read_pos - 3; i++)
-  {
-    if(conn->read_buffer[i] == '\r' && conn->read_buffer[i + 1] == '\n' &&
-       conn->read_buffer[i + 2] == '\r' && conn->read_buffer[i + 3] == '\n')
-    {
-      return 1;
-    }
-  }
-
-  return 0;
 }
