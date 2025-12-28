@@ -32,10 +32,10 @@
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
-#define LIGHTNING_MAX_CONNECTIONS         1024
-#define LIGHTNING_READ_BUFFER_SIZE        8192
-#define LIGHTNING_EPOLL_MAX_EVENTS        64
-#define LIGHTNING_EPOLL_TIMEOUT_MS        -1
+#define LIGHTNING_MAX_CONNECTIONS 1024
+#define LIGHTNING_READ_BUFFER_SIZE 8192
+#define LIGHTNING_EPOLL_MAX_EVENTS 64
+#define LIGHTNING_EPOLL_TIMEOUT_MS -1
 
 #define LIGHTNING_ERROR(error_message) \
   fprintf(stderr,                      \
@@ -52,14 +52,14 @@ enum lightning_connection_state
 
 struct lightning_connection
 {
-  char read_buffer[LIGHTNING_READ_BUFFER_SIZE];
   struct sockaddr_in client_addr;
+  char read_buffer[LIGHTNING_READ_BUFFER_SIZE];
+  char *write_buffer;
   size_t read_pos;
   size_t read_total;
   size_t write_total;
   size_t write_pos;
   time_t last_activity;
-  char *write_buffer;
   enum lightning_connection_state state;
   int fd;
 };
@@ -68,11 +68,11 @@ struct lightning_server
 {
   struct lightning_connection *connections;
   struct sockaddr_in address;
-  unsigned short port;
   int socket_fd;
   int epoll_fd;
   int max_connections;
   int active_connections;
+  unsigned short port;
   bool running;
 };
 
@@ -85,7 +85,7 @@ static void handle_client_write(struct lightning_server *server, int fd);
 static int is_request_complete(struct lightning_connection *conn);
 static int set_socket_nonblocking(int fd);
 
-struct lightning_server *lightning_create(unsigned short port)
+struct lightning_server *lightning_create_server(unsigned short port, const int max_connections)
 {
   struct lightning_server *server = malloc(sizeof(struct lightning_server));
   if(server == NULL)
@@ -150,27 +150,26 @@ struct lightning_server *lightning_create(unsigned short port)
     return NULL;
   }
 
+  server->max_connections = max_connections;
+
   struct rlimit rl;
   if(getrlimit(RLIMIT_NOFILE, &rl) == 0)
   {
-    rl.rlim_cur = rl.rlim_max;
-
-    if(setrlimit(RLIMIT_NOFILE, &rl) == -1)
+    rlim_t required_fds = max_connections + 100;
+    if(rl.rlim_cur < required_fds)
     {
-      fprintf(stderr, "Warning: Failed to maximize connections. Using default value.\n");
-      getrlimit(RLIMIT_NOFILE, &rl);
+      rl.rlim_cur = (required_fds <= rl.rlim_max) ? required_fds : rl.rlim_max;
+      if(setrlimit(RLIMIT_NOFILE, &rl) == -1)
+      {
+        fprintf(stderr, "Warning: Failed to set file descriptor limit to %lu. Current limit: %lu\n", required_fds, rl.rlim_cur);
+      }
     }
   }
-  else
-  {
-    rl.rlim_cur = 1024;
-    fprintf(stdout, "Warning: The max_connections was defined to minimum value. It can turn a performance problems if you recive more %lu connections instantly.\n", rl.rlim_cur);
-  }
 
-  server->max_connections = rl.rlim_cur;
   server->connections = calloc(server->max_connections, sizeof(struct lightning_connection));
   if(server->connections == NULL)
   {
+    LIGHTNING_ERROR("allocating connections array");
     close(server->epoll_fd);
     close(server->socket_fd);
     free(server);
@@ -185,8 +184,10 @@ struct lightning_server *lightning_create(unsigned short port)
   struct epoll_event ev;
   ev.events = EPOLLIN;
   ev.data.fd = server->socket_fd;
+
   if(epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, server->socket_fd, &ev) == -1)
   {
+    LIGHTNING_ERROR("epoll_ctl can not add the event");
     free(server->connections);
     close(server->epoll_fd);
     close(server->socket_fd);
@@ -200,11 +201,13 @@ struct lightning_server *lightning_create(unsigned short port)
   return server;
 }
 
-void lightning_ride(struct lightning_server *server)
+void *ride_the_lightning(void *args)
 {
+  struct lightning_server *server = (struct lightning_server *)args;
+
   if(server == NULL)
   {
-    return;
+    return NULL;
   }
 
   struct epoll_event events[LIGHTNING_EPOLL_MAX_EVENTS];
@@ -256,9 +259,20 @@ void lightning_ride(struct lightning_server *server)
   }
 
   printf("Lightning say: bye...\n");
+  return NULL;
 }
 
-void lightning_destroy(struct lightning_server *server)
+void lightning_server_stop(struct lightning_server *server)
+{
+  if(server == NULL)
+  {
+    return;
+  }
+
+  server->running = false;
+}
+
+void lightning_destroy_server(struct lightning_server *server)
 {
   if(server == NULL)
   {
