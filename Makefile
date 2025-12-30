@@ -1,14 +1,16 @@
 APP_NAME := test_lightning
 CC := gcc
-SRC_DIR := source
+SRC_DIR := src
 INC_DIR := include
 
 CFLAGS_COMMON := -std=c17 -Wall -Wextra -Wshadow -I$(INC_DIR) -MMD -MP
 
 CFLAGS_DEBUG   := $(CFLAGS_COMMON) -O0 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer
-CFLAGS_RELEASE := $(CFLAGS_COMMON) -O3 -march=native -flto -DNDEBUG
+CFLAGS_RELEASE := $(CFLAGS_COMMON) -O3 -march=native -mtune=native -flto -DNDEBUG \
+                  -fomit-frame-pointer -ffast-math -funroll-loops \
+                  -finline-functions -fprefetch-loop-arrays
 
-SRCS := $(APP_NAME).c $(wildcard $(SRC_DIR)/core/*.c)
+SRCS := $(APP_NAME).c $(wildcard $(SRC_DIR)/core/*.c) $(wildcard $(SRC_DIR)/http/*.c)
 OBJS_DEBUG   := $(SRCS:%.c=build/debug/%.o)
 OBJS_RELEASE := $(SRCS:%.c=build/release/%.o)
 

@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 
 #define LIGHTNING_READ_BUFFER_SIZE 8192
+#define LIGHTNING_WRITE_BUFFER_SIZE 8192
 
 enum lightning_connection_state
 {
@@ -36,7 +37,7 @@ struct lightning_connection
 {
   struct sockaddr_in client_addr;
   char read_buffer[LIGHTNING_READ_BUFFER_SIZE];
-  char *write_buffer;
+  char write_buffer[LIGHTNING_WRITE_BUFFER_SIZE];
   size_t read_pos;
   size_t read_total;
   size_t write_total;
