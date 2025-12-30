@@ -51,7 +51,7 @@ void lightning_connection_init(struct lightning_connection *conn, int fd, struct
   conn->read_pos = 0;
   conn->read_total = 0;
 
-  conn->write_buffer = NULL;
+  memset(conn->write_buffer, 0, sizeof(conn->write_buffer));
   conn->write_total = 0;
   conn->write_pos = 0;
 
@@ -68,12 +68,6 @@ void lightning_connection_reset(struct lightning_connection *conn)
   if(conn == NULL)
   {
     return;
-  }
-
-  if(conn->write_buffer != NULL)
-  {
-    free(conn->write_buffer);
-    conn->write_buffer = NULL;
   }
 
   conn->fd = -1;

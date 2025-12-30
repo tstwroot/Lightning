@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -44,6 +45,19 @@
   fprintf(stderr,                      \
           "[Lightning Error]: In <%s> line %d (%s)\n", __FUNCTION__, __LINE__, error_message)
 
+static const char PRERENDERED_RESPONSE[] =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/html; charset=UTF-8\r\n"
+    "Content-Length: 80\r\n"
+    "Connection: keep-alive\r\n"
+    "\r\n"
+    "<html><body>"
+    "<h1>Lightning Web Server</h1>"
+    "<p>Ride the lightning</p>"
+    "</body></html>";
+
+static const size_t PRERENDERED_RESPONSE_LEN = sizeof(PRERENDERED_RESPONSE) - 1;
+
 struct lightning_server
 {
   struct lightning_connection *connections;
@@ -54,6 +68,8 @@ struct lightning_server
   int active_connections;
   unsigned short port;
   bool running;
+  int worker_id;
+  unsigned long total_connections_accepted;
 };
 
 void lightning_connection_init(struct lightning_connection *conn, int fd, struct sockaddr_in *addr);
@@ -63,8 +79,9 @@ static void close_connection(struct lightning_server *server, int fd);
 static void handle_client_read(struct lightning_server *server, int fd);
 static void handle_client_write(struct lightning_server *server, int fd);
 static int set_socket_nonblocking(int fd);
+static void optimize_socket(int fd);
 
-struct lightning_server *lightning_create_server(unsigned short port, const int max_connections)
+struct lightning_server *lightning_create_server(unsigned short port, const int max_connections, const int worker_id)
 {
   struct lightning_server *server = malloc(sizeof(struct lightning_server));
   if(server == NULL)
@@ -72,6 +89,9 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
     LIGHTNING_ERROR("can not allocate struct lightning_server");
     return NULL;
   }
+
+  server->worker_id = worker_id;
+  server->total_connections_accepted = 0;
 
   server->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   if(server->socket_fd < 0)
@@ -89,6 +109,7 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
   memset(server->address.sin_zero, 0, sizeof(server->address.sin_zero));
 
   setsockopt(server->socket_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
+
   if(setsockopt(server->socket_fd, SOL_SOCKET, SO_REUSEPORT, &(int){1}, sizeof(int)) < 0)
   {
     LIGHTNING_ERROR("can not set the socketopt to SO_REUSEPORT (linux kernel > 3.9 ?)");
@@ -96,6 +117,13 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
     free(server);
     return NULL;
   }
+
+  int sndbuf = 1024 * 1024;
+  int rcvbuf = 1024 * 1024;
+
+  setsockopt(server->socket_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  setsockopt(server->socket_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+  setsockopt(server->socket_fd, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
 
   if(bind(server->socket_fd, (struct sockaddr_in *)&server->address, sizeof(struct sockaddr_in)) < 0)
   {
@@ -156,7 +184,7 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
   }
 
   struct epoll_event ev;
-  ev.events = EPOLLIN;
+  ev.events = EPOLLIN | EPOLLET;
   ev.data.fd = server->socket_fd;
 
   if(epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, server->socket_fd, &ev) == -1)
@@ -168,6 +196,8 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
     free(server);
     return NULL;
   }
+
+  // TODO: Load routes
 
   server->active_connections = 0;
   server->running = true;
@@ -309,6 +339,8 @@ static void accept_new_connection(struct lightning_server *server)
       continue;
     }
 
+    optimize_socket(client_fd);
+
     if(client_fd >= server->max_connections)
     {
       fprintf(stderr, "Error: Client fd %d exceeds max connections limit.\n", client_fd);
@@ -322,7 +354,7 @@ static void accept_new_connection(struct lightning_server *server)
     lightning_connection_init(conn, client_fd, &client_addr);
 
     struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLRDHUP;
+    ev.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
     ev.data.fd = client_fd;
 
     if(epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev) == -1)
@@ -334,6 +366,7 @@ static void accept_new_connection(struct lightning_server *server)
     }
 
     server->active_connections++;
+    server->total_connections_accepted++;
   }
 }
 
@@ -345,6 +378,13 @@ static int set_socket_nonblocking(int fd)
     return -1;
   }
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void optimize_socket(int fd)
+{
+  int flag = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+  setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &flag, sizeof(flag));
 }
 
 static void close_connection(struct lightning_server *server, int fd)
@@ -370,77 +410,65 @@ static void handle_client_read(struct lightning_server *server, int fd)
 {
   struct lightning_connection *conn = &server->connections[fd];
 
-  size_t remaining = LIGHTNING_READ_BUFFER_SIZE - conn->read_pos;
-  if(remaining == 0)
+  while(1)
   {
-    fprintf(stderr, "Read buffer full for fd %d\n", fd);
-    close_connection(server, fd);
-    return;
-  }
-
-  ssize_t data_length = recv(fd, conn->read_buffer + conn->read_pos, remaining, 0);
-
-  if(data_length > 0)
-  {
-    conn->read_pos += data_length;
-    conn->last_activity = time(NULL);
-
-    if(is_request_complete(conn))
+    size_t remaining = LIGHTNING_READ_BUFFER_SIZE - conn->read_pos;
+    if(remaining == 0)
     {
-      const char *html_body =
-          "<html><body>"
-          "<h1>Lightning Web Server</h1>"
-          "<p>Ride the lightning</p>"
-          "</body></html>";
+      fprintf(stderr, "Read buffer full for fd %d\n", fd);
+      close_connection(server, fd);
+      return;
+    }
 
-      size_t body_len = strlen(html_body);
+    ssize_t data_length = recv(fd, conn->read_buffer + conn->read_pos, remaining, 0);
 
-      char headers[512];
-      int headers_len = snprintf(headers, sizeof(headers),
-                                 "HTTP/1.1 200 OK\r\n"
-                                 "Content-Type: text/html; charset=UTF-8\r\n"
-                                 "Content-Length: %zu\r\n"
-                                 "Connection: close\r\n"
-                                 "\r\n",
-                                 body_len);
+    if(data_length > 0)
+    {
+      conn->read_pos += data_length;
+      conn->last_activity = time(NULL);
 
-      conn->write_total = headers_len + body_len;
-      conn->write_buffer = calloc(1, conn->write_total);
-
-      if(conn->write_buffer == NULL)
+      if(is_request_complete(conn))
       {
-        LIGHTNING_ERROR("can not allocate the response");
-        close_connection(server, fd);
+        conn->write_total = PRERENDERED_RESPONSE_LEN;
+
+        if(conn->write_total > LIGHTNING_WRITE_BUFFER_SIZE)
+        {
+          LIGHTNING_ERROR("response exceeds write buffer size");
+          close_connection(server, fd);
+          return;
+        }
+
+        memcpy(conn->write_buffer, PRERENDERED_RESPONSE, PRERENDERED_RESPONSE_LEN);
+
+        conn->write_pos = 0;
+        conn->state = CONN_STATE_WRITING_RESPONSE;
+
+        struct epoll_event ev;
+        ev.events = EPOLLOUT | EPOLLRDHUP | EPOLLET;
+        ev.data.fd = fd;
+
+        if(epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1)
+        {
+          fprintf(stderr, "Error: epoll_ctl MOD failed for fd %d: %s\n", fd, strerror(errno));
+          close_connection(server, fd);
+        }
         return;
       }
-
-      memcpy(conn->write_buffer, headers, headers_len);
-      memcpy(conn->write_buffer + headers_len, html_body, body_len);
-
-      conn->write_pos = 0;
-      conn->state = CONN_STATE_WRITING_RESPONSE;
     }
-
-    struct epoll_event ev;
-    ev.events = EPOLLOUT | EPOLLRDHUP;
-    ev.data.fd = fd;
-
-    if(epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1)
+    else if(data_length == 0)
     {
-      fprintf(stderr, "Error: epoll_ctl MOD failed for fd %d: %s\n", fd, strerror(errno));
       close_connection(server, fd);
+      return;
     }
-  }
-  else if(data_length == 0)
-  {
-    close_connection(server, fd);
-  }
-  else
-  {
-    if(errno != EAGAIN && errno != EWOULDBLOCK)
+    else
     {
+      if(errno == EAGAIN || errno == EWOULDBLOCK)
+      {
+        break;
+      }
       fprintf(stderr, "Error: recv() error on fd %d: %s\n", fd, strerror(errno));
       close_connection(server, fd);
+      return;
     }
   }
 }
@@ -449,25 +477,43 @@ static void handle_client_write(struct lightning_server *server, int fd)
 {
   struct lightning_connection *conn = &server->connections[fd];
 
-  size_t remaining = conn->write_total - conn->write_pos;
-  ssize_t n = send(fd, conn->write_buffer + conn->write_pos, remaining, 0);
-
-  if(n > 0)
+  while(1)
   {
-    conn->write_pos += n;
-    conn->last_activity = time(NULL);
+    size_t remaining = conn->write_total - conn->write_pos;
+    ssize_t n = send(fd, conn->write_buffer + conn->write_pos, remaining, 0);
 
-    if(conn->write_pos >= conn->write_total)
+    if(n > 0)
     {
-      close_connection(server, fd);
+      conn->write_pos += n;
+      conn->last_activity = time(NULL);
+      if(conn->write_pos >= conn->write_total)
+      {
+        conn->read_pos = 0;
+        conn->write_pos = 0;
+        conn->write_total = 0;
+        conn->state = CONN_STATE_READING_REQUEST;
+
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
+        ev.data.fd = fd;
+
+        if(epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1)
+        {
+          fprintf(stderr, "Error: epoll_ctl MOD failed for fd %d: %s\n", fd, strerror(errno));
+          close_connection(server, fd);
+        }
+        return;
+      }
     }
-  }
-  else if(n < 0)
-  {
-    if(errno != EAGAIN && errno != EWOULDBLOCK)
+    else if(n < 0)
     {
+      if(errno == EAGAIN || errno == EWOULDBLOCK)
+      {
+        break;
+      }
       fprintf(stderr, "send() error on fd %d: %s\n", fd, strerror(errno));
       close_connection(server, fd);
+      return;
     }
   }
 }

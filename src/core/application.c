@@ -18,6 +18,7 @@
 
 #define _GNU_SOURCE
 #include <pthread.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,16 @@
 
 #include <lightning/application.h>
 #include <lightning/server.h>
+
+#define LIGHTNING_BANNER \
+"░██         ░██████  ░██████  ░██     ░██ ░██████████░███    ░██ ░██████░███    ░██   ░██████ \n"\
+"░██           ░██   ░██   ░██ ░██     ░██     ░██    ░████   ░██   ░██  ░████   ░██  ░██   ░██\n"\
+"░██           ░██  ░██        ░██     ░██     ░██    ░██░██  ░██   ░██  ░██░██  ░██ ░██       \n"\
+"░██           ░██  ░██  █████ ░██████████     ░██    ░██ ░██ ░██   ░██  ░██ ░██ ░██ ░██  █████\n"\
+"░██           ░██  ░██     ██ ░██     ░██     ░██    ░██  ░██░██   ░██  ░██  ░██░██ ░██     ██\n"\
+"░██           ░██   ░██  ░███ ░██     ░██     ░██    ░██   ░████   ░██  ░██   ░████  ░██  ░███\n"\
+"░██████████ ░██████  ░█████░█ ░██     ░██     ░██    ░██    ░███ ░██████░██    ░███   ░█████░█  "
+
 
 #define LIGHTNING_ERROR(error_message) \
   fprintf(stderr,                      \
@@ -73,7 +84,7 @@ struct lightning_application *lightning_new_application(const unsigned short por
   for(int i = 0; i < application->workers_number; i++)
   {
     struct lightning_worker *current_worker = &application->workers[i];
-    current_worker->server = lightning_create_server(application->port, application->max_connections);
+    current_worker->server = lightning_create_server(application->port, application->max_connections, i);
 
     if(current_worker->server == NULL)
     {
@@ -86,6 +97,9 @@ struct lightning_application *lightning_new_application(const unsigned short por
       return NULL;
     }
   }
+
+  fprintf(stdout, "%s\n\n", LIGHTNING_BANNER);
+  printf("Threads: %d\n", application->workers_number);
 
   return application;
 }
@@ -112,6 +126,16 @@ void lightning_ride(struct lightning_application *application)
       LIGHTNING_ERROR("failed to create worker thread");
       return;
     }
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(i, &cpuset);
+
+    if(pthread_setaffinity_np(current_worker->id, sizeof(cpu_set_t), &cpuset) != 0)
+    {
+      fprintf(stderr, "Warning: Failed to set CPU affinity for worker %d\n", i);
+    }
+
     created_threads++;
   }
 

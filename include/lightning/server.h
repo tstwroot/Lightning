@@ -30,7 +30,7 @@
 
 struct lightning_server;
 
-struct lightning_server *lightning_create_server(const unsigned short port, const int max_connections);
+struct lightning_server *lightning_create_server(const unsigned short port, const int max_connections, const int worker_id);
 void *ride_the_lightning(void *args);
 void lightning_destroy_server(struct lightning_server *server);
 void lightning_server_stop(struct lightning_server *server);
