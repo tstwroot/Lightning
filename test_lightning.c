@@ -4,7 +4,7 @@
 
 int main(void)
 {
-  struct lightning_application *app = lightning_new_application(8080, 2048);
+    struct lightning_application *app = lightning_new_application(8080);
 
   if(app == NULL)
   {

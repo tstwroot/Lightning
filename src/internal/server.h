@@ -17,23 +17,30 @@
  */
 
 /**
- * @file application.h
- * @brief Application of Lightning web framework.
- * -      this will be what the user will actually use.
+ * @file server.h
+ * @brief Server creation, run and free
  */
 
-#ifndef LIGHTNING_APPLICATION_H
-#define LIGHTNING_APPLICATION_H
+#ifndef LIGHTNING_SERVER_H
+#define LIGHTNING_SERVER_H
 
 #include <stdint.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 
-struct lightning_application;
+#define LIGHTNING_EPOLL_MAX_EVENTS 64
+#define LIGHTNING_EPOLL_TIMEOUT_MS -1
 
-struct lightning_application *lightning_new_application(const unsigned short port);
-void lightning_ride(struct lightning_application *application);
-void lightning_destroy(struct lightning_application *application);
+#define LIGHTNING_ERROR(error_message) \
+  fprintf(stderr,                      \
+          "[Lightning Error]: In <%s> line %d (%s)\n", __FUNCTION__, __LINE__, error_message)
 
-//      LIGHTNING_APPLICATION_H
+struct lightning_server;
+
+struct lightning_server *lightning_create_server(const unsigned short port, int max_connections);
+void *ride_the_lightning(void *args);
+void lightning_destroy_server(struct lightning_server *server);
+void lightning_server_stop(struct lightning_server *server);
+
+//      LIGHTNING_SERVER_H
 #endif

@@ -23,10 +23,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/sysinfo.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
-#include <lightning/application.h>
-#include <lightning/server.h>
+#include "lightning/application.h"
+#include "internal/server.h"
 
 #define LIGHTNING_BANNER \
 "░██         ░██████  ░██████  ░██     ░██ ░██████████░███    ░██ ░██████░███    ░██   ░██████ \n"\
@@ -36,7 +37,6 @@
 "░██           ░██  ░██     ██ ░██     ░██     ░██    ░██  ░██░██   ░██  ░██  ░██░██ ░██     ██\n"\
 "░██           ░██   ░██  ░███ ░██     ░██     ░██    ░██   ░████   ░██  ░██   ░████  ░██  ░███\n"\
 "░██████████ ░██████  ░█████░█ ░██     ░██     ░██    ░██    ░███ ░██████░██    ░███   ░█████░█  "
-
 
 #define LIGHTNING_ERROR(error_message) \
   fprintf(stderr,                      \
@@ -56,7 +56,7 @@ struct lightning_application
   unsigned short port;
 };
 
-struct lightning_application *lightning_new_application(const unsigned short port, const int max_connections)
+struct lightning_application *lightning_new_application(const unsigned short port)
 {
   struct lightning_application *application = calloc(1, sizeof(struct lightning_application));
 
@@ -66,7 +66,6 @@ struct lightning_application *lightning_new_application(const unsigned short por
   }
 
   application->port = port;
-  application->max_connections = max_connections;
   application->workers_number = sysconf(_SC_NPROCESSORS_CONF);
 
   if(application->workers_number < 1)
@@ -81,10 +80,14 @@ struct lightning_application *lightning_new_application(const unsigned short por
     return NULL;
   }
 
+  struct rlimit rl;
+  getrlimit(RLIMIT_NOFILE, &rl);
+  int max_connections = rl.rlim_cur;
+
   for(int i = 0; i < application->workers_number; i++)
   {
     struct lightning_worker *current_worker = &application->workers[i];
-    current_worker->server = lightning_create_server(application->port, application->max_connections, i);
+    current_worker->server = lightning_create_server(application->port, max_connections);
 
     if(current_worker->server == NULL)
     {
@@ -100,6 +103,7 @@ struct lightning_application *lightning_new_application(const unsigned short por
 
   fprintf(stdout, "%s\n\n", LIGHTNING_BANNER);
   printf("Threads: %d\n", application->workers_number);
+  printf("Max simultaneous connections: %d\n", max_connections);
 
   return application;
 }
@@ -141,7 +145,8 @@ void lightning_ride(struct lightning_application *application)
 
   for(int i = 0; i < application->workers_number; i++)
   {
-    pthread_join(application->workers[i].id, NULL);
+    pthread_join(application->workers[i].id, NULL); 
+    printf("Thread[%d] finish.\n", i);
   }
 }
 

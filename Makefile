@@ -10,7 +10,7 @@ CFLAGS_RELEASE := $(CFLAGS_COMMON) -O3 -march=native -mtune=native -flto -DNDEBU
                   -fomit-frame-pointer -ffast-math -funroll-loops \
                   -finline-functions -fprefetch-loop-arrays
 
-SRCS := $(APP_NAME).c $(wildcard $(SRC_DIR)/core/*.c) $(wildcard $(SRC_DIR)/http/*.c)
+SRCS := $(APP_NAME).c $(wildcard $(SRC_DIR)/*.c)
 OBJS_DEBUG   := $(SRCS:%.c=build/debug/%.o)
 OBJS_RELEASE := $(SRCS:%.c=build/release/%.o)
 

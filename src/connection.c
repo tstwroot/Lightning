@@ -18,8 +18,10 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <time.h>
-#include <lightning/connection.h>
+
+#include "internal/connection.h"
 
 struct lightning_connection *lightning_create_connection(int max_connections)
 {
@@ -76,4 +78,14 @@ void lightning_connection_reset(struct lightning_connection *conn)
   conn->read_total = 0;
   conn->write_total = 0;
   conn->write_pos = 0;
+}
+
+void lightning_connection_close(struct lightning_connection *conn)
+{
+  close(conn->fd);
+}
+
+int lightning_connection_get_fd(struct lightning_connection *conn)
+{
+  return conn->fd;
 }

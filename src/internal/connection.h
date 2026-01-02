@@ -21,6 +21,7 @@
 
 #include <arpa/inet.h>
 
+#define LIGHTNING_MAX_CONNECTIONS 1024
 #define LIGHTNING_READ_BUFFER_SIZE 8192
 #define LIGHTNING_WRITE_BUFFER_SIZE 8192
 
@@ -50,6 +51,9 @@ struct lightning_connection
 struct lightning_connection *lightning_create_connection(int max_connections);
 void lightning_connection_init(struct lightning_connection *conn, int fd, struct sockaddr_in *addr);
 void lightning_connection_reset(struct lightning_connection *conn);
+void lightning_connection_close(struct lightning_connection *conn);
+int lightning_connection_get_fd(struct lightning_connection *conn);
+struct lightning_connection *lightning_connection_get(struct lightning_connection *conn, int index);
 
-//      LIGHTNING_CONNECITON_H
+//      LIGHTNING_CONNECTION_H
 #endif

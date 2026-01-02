@@ -16,24 +16,52 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/**
- * @file server.h
- * @brief Server creation, run and free
- */
+#ifndef LIGHTNING_REQUEST_H
+#define LIGHTNING_REQUEST_H
 
-#ifndef LIGHTNING_SERVER_H
-#define LIGHTNING_SERVER_H
+#include <stdio.h>
 
-#include <stdint.h>
-#include <sys/types.h>
-#include <arpa/inet.h>
+enum http_methods
+{
+  HTTP_GET,
+  HTTP_POST,
+  HTTP_PUT,
+  HTTP_DELETE,
+  HTTP_HEAD,
+  HTTP_OPTIONS,
+  HTTP_PATCH,
+  HTTP_UNKNOWN
+};
 
-struct lightning_server;
+struct header
+{
+  char *name;
+  char *value;
+  struct header *next;
+};
 
-struct lightning_server *lightning_create_server(const unsigned short port, const int max_connections, const int worker_id);
-void *ride_the_lightning(void *args);
-void lightning_destroy_server(struct lightning_server *server);
-void lightning_server_stop(struct lightning_server *server);
+struct body
+{
+  void *data;
+  size_t length;
+};
 
-//      LIGHTNING_SERVER_H
+struct lightning_http_request
+{
+  enum http_methods method;
+  char *uri;
+  char *path;
+  char *query_string;
+  char version[10];
+
+  struct header *headers;
+  char *host;
+  char *content_type;
+  size_t content_length;
+  char *user_agent;
+
+  struct body *body;
+};
+
+//      LIGHTNING_REQUEST_H
 #endif

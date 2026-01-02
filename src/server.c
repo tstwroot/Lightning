@@ -33,19 +33,20 @@
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
-#include <lightning/connection.h>
-#include <lightning/http.h>
+#include "internal/connection.h"
+#include "internal/server.h"
 
-#define LIGHTNING_MAX_CONNECTIONS 1024
-#define LIGHTNING_READ_BUFFER_SIZE 8192
-#define LIGHTNING_EPOLL_MAX_EVENTS 64
-#define LIGHTNING_EPOLL_TIMEOUT_MS -1
+void lightning_connection_init(struct lightning_connection *conn, int fd, struct sockaddr_in *addr);
+void lightning_connection_reset(struct lightning_connection *conn);
+static void accept_new_connection(struct lightning_server *server);
+static void close_connection(struct lightning_server *server, int fd);
+static void handle_client_read(struct lightning_server *server, int fd);
+static void handle_client_write(struct lightning_server *server, int fd);
+static int set_socket_nonblocking(int fd);
+static void optimize_socket(int fd);
+static int is_request_complete(struct lightning_connection *conn);
 
-#define LIGHTNING_ERROR(error_message) \
-  fprintf(stderr,                      \
-          "[Lightning Error]: In <%s> line %d (%s)\n", __FUNCTION__, __LINE__, error_message)
-
-static const char PRERENDERED_RESPONSE[] =
+static const char lightning_default_response[] =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/html; charset=UTF-8\r\n"
     "Content-Length: 80\r\n"
@@ -56,7 +57,7 @@ static const char PRERENDERED_RESPONSE[] =
     "<p>Ride the lightning</p>"
     "</body></html>";
 
-static const size_t PRERENDERED_RESPONSE_LEN = sizeof(PRERENDERED_RESPONSE) - 1;
+static const size_t lightning_default_response_length = sizeof(lightning_default_response) - 1;
 
 struct lightning_server
 {
@@ -68,20 +69,10 @@ struct lightning_server
   int active_connections;
   unsigned short port;
   bool running;
-  int worker_id;
   unsigned long total_connections_accepted;
 };
 
-void lightning_connection_init(struct lightning_connection *conn, int fd, struct sockaddr_in *addr);
-void lightning_connection_reset(struct lightning_connection *conn);
-static void accept_new_connection(struct lightning_server *server);
-static void close_connection(struct lightning_server *server, int fd);
-static void handle_client_read(struct lightning_server *server, int fd);
-static void handle_client_write(struct lightning_server *server, int fd);
-static int set_socket_nonblocking(int fd);
-static void optimize_socket(int fd);
-
-struct lightning_server *lightning_create_server(unsigned short port, const int max_connections, const int worker_id)
+struct lightning_server *lightning_create_server(unsigned short port, int max_connections)
 {
   struct lightning_server *server = malloc(sizeof(struct lightning_server));
   if(server == NULL)
@@ -90,7 +81,6 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
     return NULL;
   }
 
-  server->worker_id = worker_id;
   server->total_connections_accepted = 0;
 
   server->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -158,20 +148,6 @@ struct lightning_server *lightning_create_server(unsigned short port, const int 
   }
 
   server->max_connections = max_connections;
-
-  struct rlimit rl;
-  if(getrlimit(RLIMIT_NOFILE, &rl) == 0)
-  {
-    rlim_t required_fds = max_connections + 100;
-    if(rl.rlim_cur < required_fds)
-    {
-      rl.rlim_cur = (required_fds <= rl.rlim_max) ? required_fds : rl.rlim_max;
-      if(setrlimit(RLIMIT_NOFILE, &rl) == -1)
-      {
-        fprintf(stderr, "Warning: Failed to set file descriptor limit to %lu. Current limit: %lu\n", required_fds, rl.rlim_cur);
-      }
-    }
-  }
 
   server->connections = lightning_create_connection(server->max_connections);
   if(server->connections == NULL)
@@ -288,9 +264,10 @@ void lightning_destroy_server(struct lightning_server *server)
   for(int i = 0; i < server->max_connections; i++)
   {
     struct lightning_connection *conn = &server->connections[i];
-    if(conn->fd >= 0)
+    int current_fd = lightning_connection_get_fd(conn);
+    if(current_fd >= 0)
     {
-      close(conn->fd);
+      lightning_connection_close(conn);
     }
     lightning_connection_reset(conn);
   }
@@ -343,15 +320,39 @@ static void accept_new_connection(struct lightning_server *server)
 
     if(client_fd >= server->max_connections)
     {
-      fprintf(stderr, "Error: Client fd %d exceeds max connections limit.\n", client_fd);
       char error_buffer[] = "Error.";
       send(client_fd, error_buffer, sizeof(error_buffer), 0);
       close(client_fd);
       continue;
     }
 
+    static int max_fd_seen = 0;
+    if(client_fd > max_fd_seen)
+    {
+      max_fd_seen = client_fd;
+    }
+
     struct lightning_connection *conn = &server->connections[client_fd];
-    lightning_connection_init(conn, client_fd, &client_addr);
+
+    if(conn == NULL)
+    {
+      return;
+    }
+
+    conn->fd = client_fd;
+    conn->state = CONN_STATE_READING_REQUEST;
+
+    memset(conn->read_buffer, 0, sizeof(conn->read_buffer));
+    conn->read_pos = 0;
+    conn->read_total = 0;
+
+    memset(conn->write_buffer, 0, sizeof(conn->write_buffer));
+    conn->write_total = 0;
+    conn->write_pos = 0;
+
+    memcpy(&conn->client_addr, &client_addr, sizeof(struct sockaddr_in));
+
+    conn->last_activity = time(NULL);
 
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
@@ -429,7 +430,7 @@ static void handle_client_read(struct lightning_server *server, int fd)
 
       if(is_request_complete(conn))
       {
-        conn->write_total = PRERENDERED_RESPONSE_LEN;
+        conn->write_total = lightning_default_response_length;
 
         if(conn->write_total > LIGHTNING_WRITE_BUFFER_SIZE)
         {
@@ -438,7 +439,7 @@ static void handle_client_read(struct lightning_server *server, int fd)
           return;
         }
 
-        memcpy(conn->write_buffer, PRERENDERED_RESPONSE, PRERENDERED_RESPONSE_LEN);
+        memcpy(conn->write_buffer, lightning_default_response, lightning_default_response_length);
 
         conn->write_pos = 0;
         conn->state = CONN_STATE_WRITING_RESPONSE;
@@ -516,4 +517,25 @@ static void handle_client_write(struct lightning_server *server, int fd)
       return;
     }
   }
+}
+
+static int is_request_complete(struct lightning_connection *conn)
+{
+  if(conn == NULL || conn->read_pos == 0)
+  {
+    return 0;
+  }
+
+  for(size_t i = 0; i < conn->read_pos - 3; i++)
+  {
+    if(conn->read_buffer[i] == '\r' &&
+       conn->read_buffer[i + 1] == '\n' &&
+       conn->read_buffer[i + 2] == '\r' &&
+       conn->read_buffer[i + 3] == '\n')
+    {
+      return 1;
+    }
+  }
+
+  return 0;
 }
