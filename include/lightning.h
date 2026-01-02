@@ -28,5 +28,8 @@
 
 #ifndef LIGHTNING_H
 #define LIGHTNING_H
+
+#include <lightning/application.h>
+
 //      LIGHTNING_H
 #endif
